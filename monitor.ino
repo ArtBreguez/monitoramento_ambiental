@@ -1,5 +1,6 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <util/delay.h>
 #include "DHT.h"
 
 // Definições de pinos (Arduino Uno)
@@ -8,6 +9,7 @@
 #define LED_VERDE PD3  // Digital 3
 #define LED_AMARELO PD4 // Digital 4
 #define LED_VERMELHO PD5 // Digital 5
+#define BOTAO_PIN PD7   // Digital 7
 
 // Configuração do Timer1 para 2 segundos
 #define TIMER1_PRESCALER 1024
@@ -18,6 +20,10 @@ volatile float temperatura = 0;
 volatile float umidade = 0;
 volatile uint16_t poeira = 0;
 volatile uint8_t estado = 0;
+
+// Variáveis para debounce do botão
+uint8_t botao_anterior = 1;
+#define DEBOUNCE_DELAY 50
 
 DHT dht(DHT_PIN, DHT22);
 
@@ -85,12 +91,58 @@ void atualizar_leds() {
     else PORTD |= (1 << LED_VERMELHO);
 }
 
+uint8_t botao_pressionado() {
+    static uint8_t estado_anterior = 1;
+    uint8_t estado_atual = (PIND & (1 << BOTAO_PIN)) == 0; // Lê o estado do botão (0 = pressionado)
+    
+    // Detecção de borda de descida com debounce
+    if (estado_atual != estado_anterior) {
+        _delay_ms(DEBOUNCE_DELAY);
+        estado_atual = (PIND & (1 << BOTAO_PIN)) == 0;
+        if (estado_atual != estado_anterior) {
+            estado_anterior = estado_atual;
+            if (estado_atual == 0) { // Botão pressionado
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+void enviar_dados_serial() {
+    // Temperatura (formato "T:25")
+    enviar_string("T:");
+    enviar_serial('0' + (int)temperatura/10); 
+    enviar_serial('0' + (int)temperatura%10);  
+    
+    // Umidade (formato " U:45")
+    enviar_string(" U:");
+    enviar_serial('0' + (int)umidade/10);      
+    enviar_serial('0' + (int)umidade%10);     
+    
+    // Poeira (formato " P:0765") - 4 dígitos com zeros à esquerda
+    enviar_string(" P:");
+    enviar_serial('0' + poeira/1000);        
+    enviar_serial('0' + (poeira%1000)/100);   
+    enviar_serial('0' + (poeira%100)/10);     
+    enviar_serial('0' + poeira%10);           
+    
+    // Estado (formato " E:1")
+    enviar_string(" E:");
+    enviar_serial('0' + estado);              
+    enviar_serial('\n');
+}
+
 void setup() {
     // Configurar pinos dos LEDs como saída (PD3, PD4, PD5)
     DDRD |= (1 << LED_VERDE) | (1 << LED_AMARELO) | (1 << LED_VERMELHO);
     
     // Configurar pino do DHT como entrada
     DDRD &= ~(1 << DHT_PIN);
+    
+    // Configurar pino do botão como entrada com pull-up
+    DDRD &= ~(1 << BOTAO_PIN);
+    PORTD |= (1 << BOTAO_PIN);
     
     configurar_serial();
     configurar_adc();
@@ -108,31 +160,16 @@ void loop() {
     if (timer_flag) {
         timer_flag = 0;
         
-        ler_sensores(); // Lê temperatura, umidade e valor do LDR (poeira)
-        
-        atualizar_leds(); // Aciona os LEDs conforme as condições lidas
-                
-        // Temperatura (formato "T:25")
-        enviar_string("T:");
-        enviar_serial('0' + (int)temperatura/10); 
-        enviar_serial('0' + (int)temperatura%10);  
-        
-        // Umidade (formato " U:45")
-        enviar_string(" U:");
-        enviar_serial('0' + (int)umidade/10);      
-        enviar_serial('0' + (int)umidade%10);     
-        
-        // Poeira (formato " P:0765") - 4 dígitos com zeros à esquerda
-        enviar_string(" P:");
-        enviar_serial('0' + poeira/1000);        
-        enviar_serial('0' + (poeira%1000)/100);   
-        enviar_serial('0' + (poeira%100)/10);     
-        enviar_serial('0' + poeira%10);           
-        
-        // Estado (formato " E:1")
-        enviar_string(" E:");
-        enviar_serial('0' + estado);              
-        enviar_serial('\n');                      
-        
+        ler_sensores();
+        atualizar_leds();
+        enviar_dados_serial();
+    }
+    
+    // Verifica o botão de forma assíncrona
+    if (botao_pressionado()) {
+        enviar_string("Leitura manual solicitada!\n");
+        ler_sensores();    // Força leitura imediata
+        atualizar_leds();  // Atualiza LEDs imediatamente
+        enviar_dados_serial(); // Envia dados pela serial
     }
 }
