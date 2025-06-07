@@ -1,91 +1,138 @@
+#include <avr/io.h>
+#include <avr/interrupt.h>
 #include "DHT.h"
 
-#define DHTPIN 2
-#define DHTTYPE DHT22
-#define LDRPIN A0
-#define LED_VERDE 3
-#define LED_AMARELO 4
-#define LED_VERMELHO 5
+// Definições de pinos (Arduino Uno)
+#define DHT_PIN 2     // PD2
+#define LDR_PIN 0     // PC0 (A0)
+#define LED_VERDE PD3  // Digital 3
+#define LED_AMARELO PD4 // Digital 4
+#define LED_VERMELHO PD5 // Digital 5
 
-// Faixas de condições
-#define TEMP_MIN_SEGURA 18
-#define TEMP_MAX_SEGURA 28
-#define TEMP_MIN_ALERTA 15
-#define TEMP_MAX_ALERTA 32
+// Configuração do Timer1 para 2 segundos
+#define TIMER1_PRESCALER 1024
+#define TIMER1_COMPARE 31249 // (16000000/(1024*1))-1 = 15624 para 1s
 
-#define UMIDADE_MIN_SEGURA 40
-#define UMIDADE_MAX_SEGURA 70
-#define UMIDADE_MIN_ALERTA 30
-#define UMIDADE_MAX_ALERTA 80
+volatile uint8_t timer_flag = 0;
+volatile float temperatura = 0;
+volatile float umidade = 0;
+volatile uint16_t poeira = 0;
+volatile uint8_t estado = 0;
 
-#define POEIRA_MIN_SEGURA 200
-#define POEIRA_MAX_SEGURA 800
-#define POEIRA_MIN_ALERTA 100
-#define POEIRA_MAX_ALERTA 900
+DHT dht(DHT_PIN, DHT22);
 
-DHT dht(DHTPIN, DHTTYPE);
+void configurar_serial() {
+    UBRR0H = 0;
+    UBRR0L = 103;
+    UCSR0B = (1 << TXEN0) | (1 << RXEN0);
+    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+}
+
+void enviar_serial(char c) {
+    while (!(UCSR0A & (1 << UDRE0)));
+    UDR0 = c;
+}
+
+void enviar_string(const char *str) {
+    while (*str) {
+        enviar_serial(*str++);
+    }
+}
+
+void configurar_timer() {
+    TCCR1A = 0;
+    TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10);
+    OCR1A = TIMER1_COMPARE;
+    TIMSK1 = (1 << OCIE1A);
+}
+
+void configurar_adc() {
+    ADMUX = (1 << REFS0) | (LDR_PIN & 0x07);
+    ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
+}
+
+uint16_t ler_adc() {
+    ADCSRA |= (1 << ADSC);
+    while (ADCSRA & (1 << ADSC));
+    return ADC;
+}
+
+ISR(TIMER1_COMPA_vect) {
+    timer_flag = 1;
+}
+
+void ler_sensores() {
+    umidade = dht.readHumidity();
+    temperatura = dht.readTemperature();
+    poeira = ler_adc();
+    
+    if (temperatura > 30 || umidade > 80 || poeira > 900) {
+        estado = 2;
+    } else if (temperatura > 28 || umidade > 70 || poeira > 800) {
+        estado = 1;
+    } else {
+        estado = 0;
+    }
+}
+
+void atualizar_leds() {
+    // Desligar todos os LEDs
+    PORTD &= ~((1 << LED_VERDE) | (1 << LED_AMARELO) | (1 << LED_VERMELHO));
+    
+    // Ligar LED conforme estado
+    if (estado == 0) PORTD |= (1 << LED_VERDE);
+    else if (estado == 1) PORTD |= (1 << LED_AMARELO);
+    else PORTD |= (1 << LED_VERMELHO);
+}
 
 void setup() {
-  Serial.begin(9600);
-  dht.begin();
-  pinMode(LDRPIN, INPUT);
-  pinMode(LED_VERDE, OUTPUT);
-  pinMode(LED_AMARELO, OUTPUT);
-  pinMode(LED_VERMELHO, OUTPUT);
+    // Configurar pinos dos LEDs como saída (PD3, PD4, PD5)
+    DDRD |= (1 << LED_VERDE) | (1 << LED_AMARELO) | (1 << LED_VERMELHO);
+    
+    // Configurar pino do DHT como entrada
+    DDRD &= ~(1 << DHT_PIN);
+    
+    configurar_serial();
+    configurar_adc();
+    configurar_timer();
+    
+    sei();
+    
+    dht.begin();
+    
+    enviar_string("Sistema iniciado\n");
 }
 
 void loop() {
-  delay(2000);
-  
-  float umidade = dht.readHumidity();
-  float temperatura = dht.readTemperature();
-  int poeira = analogRead(LDRPIN);
-
-  if (isnan(umidade) || isnan(temperatura)) {
-    Serial.println("Erro na leitura do DHT22");
-    return;
-  }
-
-  // Verifica condições
-  bool tempSegura = (temperatura >= TEMP_MIN_SEGURA) && (temperatura <= TEMP_MAX_SEGURA);
-  bool tempAlerta = (temperatura >= TEMP_MIN_ALERTA && temperatura < TEMP_MIN_SEGURA) || 
-                   (temperatura > TEMP_MAX_SEGURA && temperatura <= TEMP_MAX_ALERTA);
-  
-  bool umidadeSegura = (umidade >= UMIDADE_MIN_SEGURA) && (umidade <= UMIDADE_MAX_SEGURA);
-  bool umidadeAlerta = (umidade >= UMIDADE_MIN_ALERTA && umidade < UMIDADE_MIN_SEGURA) || 
-                      (umidade > UMIDADE_MAX_SEGURA && umidade <= UMIDADE_MAX_ALERTA);
-  
-  bool poeiraSegura = (poeira >= POEIRA_MIN_SEGURA) && (poeira <= POEIRA_MAX_SEGURA);
-  bool poeiraAlerta = (poeira >= POEIRA_MIN_ALERTA && poeira < POEIRA_MIN_SEGURA) || 
-                     (poeira > POEIRA_MAX_SEGURA && poeira <= POEIRA_MAX_ALERTA);
-
-  // Determina o estado geral
-  bool condicaoCritica = (temperatura < TEMP_MIN_ALERTA || temperatura > TEMP_MAX_ALERTA) ||
-                        (umidade < UMIDADE_MIN_ALERTA || umidade > UMIDADE_MAX_ALERTA) ||
-                        (poeira < POEIRA_MIN_ALERTA || poeira > POEIRA_MAX_ALERTA);
-  
-  bool condicaoAtencao = (tempAlerta || umidadeAlerta || poeiraAlerta) && !condicaoCritica;
-  bool condicaoSegura = tempSegura && umidadeSegura && poeiraSegura && !condicaoAtencao && !condicaoCritica;
-
-  // Controla os LEDs
-  digitalWrite(LED_VERDE, condicaoSegura ? HIGH : LOW);
-  digitalWrite(LED_AMARELO, condicaoAtencao ? HIGH : LOW);
-  digitalWrite(LED_VERMELHO, condicaoCritica ? HIGH : LOW);
-
-  // Exibe os dados
-  Serial.print("Temperatura: ");
-  Serial.print(temperatura);
-  Serial.print("°C | Umidade: ");
-  Serial.print(umidade);
-  Serial.print("% | Nível de poeira: ");
-  Serial.print(poeira);
-  Serial.print(" | Estado: ");
-  
-  if(condicaoCritica) {
-    Serial.println("CRÍTICO!");
-  } else if(condicaoAtencao) {
-    Serial.println("ATENÇÃO!");
-  } else {
-    Serial.println("NORMAL");
-  }
+    // Verifica se a flag do timer foi ativada (interrupção ocorreu)
+    if (timer_flag) {
+        timer_flag = 0;
+        
+        ler_sensores(); // Lê temperatura, umidade e valor do LDR (poeira)
+        
+        atualizar_leds(); // Aciona os LEDs conforme as condições lidas
+                
+        // Temperatura (formato "T:25")
+        enviar_string("T:");
+        enviar_serial('0' + (int)temperatura/10); 
+        enviar_serial('0' + (int)temperatura%10);  
+        
+        // Umidade (formato " U:45")
+        enviar_string(" U:");
+        enviar_serial('0' + (int)umidade/10);      
+        enviar_serial('0' + (int)umidade%10);     
+        
+        // Poeira (formato " P:0765") - 4 dígitos com zeros à esquerda
+        enviar_string(" P:");
+        enviar_serial('0' + poeira/1000);        
+        enviar_serial('0' + (poeira%1000)/100);   
+        enviar_serial('0' + (poeira%100)/10);     
+        enviar_serial('0' + poeira%10);           
+        
+        // Estado (formato " E:1")
+        enviar_string(" E:");
+        enviar_serial('0' + estado);              
+        enviar_serial('\n');                      
+        
+    }
 }
