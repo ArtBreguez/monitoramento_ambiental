@@ -31,6 +31,9 @@ O sistema monitora temperatura, umidade e nível de poeira no ambiente, indicand
 ### Montagem do Circuito
 ![image](https://github.com/user-attachments/assets/176c39d9-20d2-4a6e-ae86-6e56f4c35373)
 
+### Fluxograma de Funcionamento
+![monitoramento](https://github.com/user-attachments/assets/9bbff62d-141b-4753-b462-804c91aeb271)
+
 ### Outros
 - **Botão** para leitura manual
 
